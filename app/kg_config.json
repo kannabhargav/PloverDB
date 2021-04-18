@@ -1,6 +1,7 @@
 {
-  "file_name": "kg2c_lite.json",
-  "is_test": false,
+  "nodes_file_name": "kg2c_lite_nodes.tsv",
+  "edges_file_name": "kg2c_lite_edges.tsv",
+  "is_test": true,
   "labels": {
     "edges": "predicate",
     "nodes": "expanded_categories"

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
+import csv
 import json
 import time
 
 import requests
 from collections import defaultdict
-from typing import List, Dict, Union, Set, DefaultDict
+from typing import List, Dict, Union, Set
 
 from treelib import Tree
 import yaml
@@ -15,14 +16,18 @@ class PloverDB:
     def __init__(self):
         with open("kg_config.json") as config_file:
             self.kg_config = json.load(config_file)
+        self.is_test = self.kg_config["is_test"]
         self.predicate_property = self.kg_config["labels"]["edges"]
         self.categories_property = self.kg_config["labels"]["nodes"]
+        self.predicate_col = None
+        self.categories_col = None
+        self.subject_col = None
+        self.object_col = None
         self.root_category_name = "biolink:NamedThing"
         self.root_predicate_name = "biolink:related_to"
         self.core_node_properties = {"name", "category"}
         self.category_map = dict()
         self.predicate_map = dict()
-        self.is_test = self.kg_config["is_test"]
         self.node_lookup_map = dict()
         self.edge_lookup_map = dict()
         self.main_index = dict()
@@ -91,8 +96,8 @@ class PloverDB:
             # Add everything we found for this input curie to our answers so far
             for answer_edge_id in answer_edge_ids:
                 edge = self.edge_lookup_map[answer_edge_id]
-                subject_curie = edge["subject"]
-                object_curie = edge["object"]
+                subject_curie = edge[self.subject_col]
+                object_curie = edge[self.object_col]
                 output_curie = object_curie if object_curie != input_curie else subject_curie
                 # Add this edge and its nodes to our answer KG
                 final_qedge_answers.add(answer_edge_id)
@@ -101,13 +106,9 @@ class PloverDB:
 
         # Form final response according to parameter passed in query
         if trapi_query.get("include_metadata"):
-            start = time.time()
             nodes = {input_qnode_key: {node_id: self.node_lookup_map[node_id] for node_id in final_input_qnode_answers},
                      output_qnode_key: {node_id: self.node_lookup_map[node_id] for node_id in final_output_qnode_answers}}
-            print(f"Grabbing node objects took: {round(start - time.time(), 5)} seconds")
-            start = time.time()
             edges = {qedge_key: {edge_id: self.edge_lookup_map[edge_id] for edge_id in final_qedge_answers}}
-            print(f"Grabbing edge objects took: {round(start - time.time(), 5)} seconds")
         else:
             nodes = {input_qnode_key: list(final_input_qnode_answers),
                      output_qnode_key: list(final_output_qnode_answers)}
@@ -152,43 +153,50 @@ class PloverDB:
 
     def _build_indexes(self):
         # Load our KG file and build simple node and edge lookup maps for storing the node/edge objects by ID
-        with open(self.kg_config["file_name"], "r") as kg2c_file:
-            kg2c_dict = json.load(kg2c_file)
-        self.node_lookup_map = {node["id"]: node for node in kg2c_dict["nodes"]}
-        self.edge_lookup_map = {edge["id"]: edge for edge in kg2c_dict["edges"]}
+        with open(self.kg_config["nodes_file_name"], "r") as kg2c_nodes_file:
+            nodes_reader = csv.reader(kg2c_nodes_file, delimiter="\t")
+            node_headers = next(nodes_reader)[1:]  # Exclude node ID
+            self.node_lookup_map = {row[0]: row[1:] for row in nodes_reader}  # Exclude IDs from node objects
+            self.categories_col = node_headers.index(self.categories_property)
+        with open(self.kg_config["edges_file_name"], "r") as kg2c_edges_file:
+            edges_reader = csv.reader(kg2c_edges_file, delimiter="\t")
+            edge_headers = next(edges_reader)[1:]  # Exclude edge ID
+            self.edge_lookup_map = {int(row[0]): row[1:] for row in edges_reader}  # Exclude IDs from edge objects
+            self.predicate_col = edge_headers.index(self.predicate_property)
+            self.subject_col = edge_headers.index("subject")
+            self.object_col = edge_headers.index("object")
 
         if self.is_test:
             # Narrow down our test JSON file to make sure all node IDs used by edges appear in our node_lookup_map
-            node_ids_used_by_edges = {edge["subject"] for edge in self.edge_lookup_map.values()}.union(edge["object"] for edge in self.edge_lookup_map.values())
+            node_ids_used_by_edges = {node_id for edge in self.edge_lookup_map.values()
+                                      for node_id in {edge[self.subject_col], edge[self.object_col]}}
             node_lookup_map_trimmed = {node_id: self.node_lookup_map[node_id] for node_id in node_ids_used_by_edges
                                        if node_id in self.node_lookup_map}
             self.node_lookup_map = node_lookup_map_trimmed
             edge_lookup_map_trimmed = {edge_id: edge for edge_id, edge in self.edge_lookup_map.items() if
-                                       edge["subject"] in self.node_lookup_map and edge["object"] in self.node_lookup_map}
+                                       edge[self.subject_col] in self.node_lookup_map and
+                                       edge[self.object_col] in self.node_lookup_map}
             self.edge_lookup_map = edge_lookup_map_trimmed
 
         # Build our main index (modified/nested adjacency list kind of structure)
         print(f"  Building main index..")
         start = time.time()
         for edge_id, edge in self.edge_lookup_map.items():
-            del edge["id"]  # Remove the ID property since it's now the key in our edge lookup map
-            subject_id = edge["subject"]
-            object_id = edge["object"]
-            predicate = self._get_predicate_id(edge[self.predicate_property])
-            subject_category_names = self.node_lookup_map[subject_id][self.categories_property]
+            subject_id = edge[self.subject_col]
+            object_id = edge[self.object_col]
+            predicate = self._get_predicate_id(edge[self.predicate_col])
+            subject_category_names = self._extract_list_from_string(self.node_lookup_map[subject_id][self.categories_col])
             subject_categories = {self._get_category_id(category) for category in subject_category_names}
-            object_category_names = self.node_lookup_map[object_id][self.categories_property]
+            object_category_names = self._extract_list_from_string(self.node_lookup_map[object_id][self.categories_col])
             object_categories = {self._get_category_id(category) for category in object_category_names}
             # Record this edge in both the forwards and backwards direction (we only support undirected queries)
             self._add_to_main_index(subject_id, object_id, object_categories, predicate, edge_id, 1)
             self._add_to_main_index(object_id, subject_id, subject_categories, predicate, edge_id, 0)
         print(f"  Building main index took {round((time.time() - start) / 60, 2)} minutes.")
 
-        # Remove properties we no longer want on node objects (only want 'core' TRAPI properties on nodes)
+        # Remove our node 'labels' col, now that we've built the index off of it
         for node_id, node in self.node_lookup_map.items():
-            properties_to_delete = set(node).difference(self.core_node_properties)
-            for property_name in properties_to_delete:
-                del node[property_name]
+            del node[self.categories_col]
 
         # Build a map of expanded predicates (descendants and inverses) for easy lookup
         self._build_expanded_predicates_map()
@@ -288,13 +296,13 @@ class PloverDB:
         # Build a map of nodes to their direct 'subclass_of' children
         parent_to_child_dict = defaultdict(set)
         for edge_id, edge in self.edge_lookup_map.items():
-            if edge[self.predicate_property] == "biolink:subclass_of":
-                parent_node_id = edge["object"]
-                child_node_id = edge["subject"]
+            if edge[self.predicate_col] == "biolink:subclass_of":
+                parent_node_id = edge[self.object_col]
+                child_node_id = edge[self.subject_col]
                 parent_to_child_dict[parent_node_id].add(child_node_id)
-            elif edge[self.predicate_property] == "biolink:superclass_of":
-                parent_node_id = edge["subject"]
-                child_node_id = edge["object"]
+            elif edge[self.predicate_col] == "biolink:superclass_of":
+                parent_node_id = edge[self.subject_col]
+                child_node_id = edge[self.object_col]
                 parent_to_child_dict[parent_node_id].add(child_node_id)
 
         # Then recursively derive all 'subclass_of' descendants for each node
@@ -334,6 +342,10 @@ class PloverDB:
         sub_tree = tree.subtree(node_identifier)
         descendants = {node.identifier for node in sub_tree.all_nodes()}
         return descendants
+
+    @staticmethod
+    def _extract_list_from_string(str_encoded_list: str) -> List[str]:
+        return str_encoded_list.split("ǂ")
 
 
 def main():
