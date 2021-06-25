@@ -6,12 +6,12 @@ RUN echo "uwsgi_read_timeout 120;" > /etc/nginx/conf.d/custom_timeout.conf
 COPY requirements.txt /app/
 RUN pip install -r /app/requirements.txt
 
-COPY .aws /root/.aws
 RUN apt-get update
-RUN apt-get install -y awscli
-RUN aws configure set default.region us-west-2
+RUN curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | bash
+RUN apt-get install git-lfs
+RUN export GIT_LFS_SKIP_SMUDGE=1
 
 COPY ./app /app
 COPY test/kg2c-test.json /app/kg2c-test.json
 
-RUN python /app/app/build_indexes.py
+RUN python -u /app/app/build_indexes.py

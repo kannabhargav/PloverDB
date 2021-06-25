@@ -26,7 +26,7 @@ class PloverDB:
         with open(self.config_file_path) as config_file:
             self.kg_config = json.load(config_file)
         self.is_test = self.kg_config["is_test"]
-        self.download_latest_kg2c = self.kg_config["download_latest_kg2c"]
+        self.download_kg2c = self.kg_config["download_kg2c"]
         self.kg_json_name = self._get_kg_json_file_name()
         self.kg_json_path = f"{SCRIPT_DIR}/../{self.kg_json_name}"
         self.pickle_index_path = f"{SCRIPT_DIR}/../plover_indexes.pickle"
@@ -49,10 +49,6 @@ class PloverDB:
         logging.info("Starting to build indexes..")
         start = time.time()
         # Load our KG file and build simple node and edge lookup maps for storing the node/edge objects by ID
-        if self.download_latest_kg2c:
-            logging.info("  Downloading production KG2c JSON file..")
-            subprocess.check_call(["aws", "s3", "cp", "--region", "us-west-2", f"s3://rtx-kg2c-prod/{self.kg_json_name}.gz", f"{self.kg_json_path}.gz"])
-            subprocess.check_call(["gunzip", f"{self.kg_json_path}.gz"])
         with open(self.kg_json_path, "r") as kg2c_file:
             logging.info("  Loading KG JSON file..")
             kg2c_dict = json.load(kg2c_file)
@@ -113,7 +109,7 @@ class PloverDB:
             pickle.dump(all_indexes, index_file, protocol=pickle.HIGHEST_PROTOCOL)
 
         # Get rid of any auto-downloaded KG json file (since now no longer need it)
-        if self.download_latest_kg2c:
+        if self.download_kg2c:
             logging.info("  Removing production KG2c JSON file (no longer needed)..")
             subprocess.call(["rm", "-f", self.kg_json_path])
 
@@ -402,8 +398,9 @@ class PloverDB:
             self._create_tree_recursive(child_id, parent_to_child_map, tree)
 
     def _get_kg_json_file_name(self) -> Optional[str]:
-        if self.download_latest_kg2c:
-            return "kg2c_lite_PROD.json" if not self.is_test else "kg2c_lite_PROD_test.json"
+        if self.download_kg2c:
+            remote_kg_file_name = self.kg_config["remote_kg_file_name"].strip(".gz")  # We've already unzipped it
+            return remote_kg_file_name
         else:
             local_kg_file_name = self.kg_config["local_kg_file_name"]
             if not local_kg_file_name:
